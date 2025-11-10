@@ -34,7 +34,12 @@ dotenv.config()
 // 웹소켓과 express 통합
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*", methods: ['GET', 'POST', 'PUT', 'DELETE']}
+  cors: { 
+    // origin: "*",
+    origin: 'http://localhost:3000',
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE']
+  }
 })
 
 
@@ -51,10 +56,10 @@ app.use(express.json())
 
 // extended true, qs모듈을 사용하여 쿼리스트링 인식
 app.use(express.urlencoded({extended : false}))
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  next()
-})
+// app.use((req, res, next) => {
+//   res.setHeader('Access-Control-Allow-Origin', '*')
+//   next()
+// })
 
 // passport 설정
 app.use(passport.initialize())

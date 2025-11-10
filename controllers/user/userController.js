@@ -2,6 +2,40 @@ import User from "../../models/userSchema.js";
 import bcrypt from "bcrypt";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
+import moment from "moment";
+import Matching from "../../models/matchingSchema.js";
+import Like from "../../models/likeSchema.js";
+import { calculateAddressDistance } from "../../utils/distanceUtils.js";
+
+// 날짜 포맷팅 함수
+const formatDate = (date) => {
+    if (!date) return null;
+    return moment(date).format('YYYY-MM-DD HH:mm:ss');
+};
+
+// 배열 안전 처리 유틸리티 함수
+const safeParseArray = (data, fieldName) => {
+    console.log(`${fieldName} 원본 데이터:`, data, '타입:', typeof data);
+    
+    if (Array.isArray(data)) {
+        console.log(`${fieldName} 이미 배열입니다:`, data);
+        return data;
+    }
+    
+    if (typeof data === 'string') {
+        try {
+            const parsed = JSON.parse(data);
+            console.log(`${fieldName} JSON 파싱 결과:`, parsed);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+            console.error(`${fieldName} JSON 파싱 오류:`, error);
+            return [];
+        }
+    }
+    
+    console.log(`${fieldName} 기본값 반환: []`);
+    return [];
+};
 
 // 1단계: 기본 회원가입 - DB에 저장하지 않고 임시 데이터만 반환
 export const registerUser = async (req, res) => {
@@ -86,6 +120,11 @@ export const profileRegistration = async (req, res) => {
                 nickname, favoriteSnack, walkingCourse, messageToFriend, 
                 charactor, favorites, cautions, neutralization } = req.body;
         
+        // 디버깅을 위한 로그
+        console.log('=== 프로필 등록 데이터 ===');
+        console.log('favorites:', favorites, 'type:', typeof favorites);
+        console.log('cautions:', cautions, 'type:', typeof cautions);
+        
         // 프로필 이미지 처리 (multer 미들웨어 필요)
         const profileImage = req.file;
         
@@ -113,8 +152,8 @@ export const profileRegistration = async (req, res) => {
                     walkingCourse: walkingCourse,
                     messageToFriend: messageToFriend,
                     charactor: charactor,        
-                    favorites: favorites,         
-                    cautions: cautions,  
+                    favorites: safeParseArray(favorites, 'favorites'),         
+                    cautions: safeParseArray(cautions, 'cautions'),  
                     neutralization: neutralization,
                     profileImage: profileImagePath
                 }
@@ -237,6 +276,11 @@ export const completeRegistration = async (req, res) => {
             console.log('req.body.provider:', req.body.provider);
             console.log('detectedProvider:', detectedProvider);
             console.log('isSocialUser:', isSocialUser);
+            
+            // dogProfile의 birthDate 형식 변환
+            if (dogProfile && dogProfile.birthDate) {
+                dogProfile.birthDate = new Date(dogProfile.birthDate).toISOString().split('T')[0];
+            }
             
             // 4. 모든 정보를 한번에 저장
             const userData = {
@@ -395,7 +439,7 @@ export const modifyUser = async (req, res) => {
                 birth: updatedUser.birth,
                 ad_yn: updatedUser.ad_yn,
                 pri_yn: updatedUser.pri_yn,
-                updatedAt: updatedUser.updatedAt
+                updatedAt: formatDate(updatedUser.updatedAt)
             }
         });
 
@@ -496,6 +540,7 @@ export const getUserById = async (req, res) => {
         });
     }
 };
+
 
 // 전체 회원 삭제 (관리자용)
 export const deleteAllUsers = async (req, res) => {
@@ -741,6 +786,148 @@ export const socialUserInfoRegistration = async (req, res) => {
         res.status(500).json({
             registerStatus: false,
             message: "회원정보 입력 중 오류가 발생했습니다."
+        });
+    }
+};
+
+// 매칭용 사용자 목록 조회
+export const getMatchingUsers = async (req, res) => {
+    try {
+        const { currentUserAddress } = req.query;
+        
+        // 프로필이 완성된 사용자들만 조회
+        const users = await User.find({
+            profileComplete: true,
+            'dogProfile.name': { $exists: true, $ne: null },
+            'dogProfile.breed': { $exists: true, $ne: null },
+            'dogProfile.gender': { $exists: true, $ne: null },
+            'dogProfile.weight': { $exists: true, $ne: null },
+            'dogProfile.birthDate': { $exists: true, $ne: null },
+            'dogProfile.neutralization': { $exists: true, $ne: null },
+            'dogProfile.profileImage': { $exists: true, $ne: null }
+        }).lean();
+
+        // 각 사용자에 대해 친구 수와 좋아요 수, 거리 계산
+        const usersWithStats = await Promise.all(users.map(async (user) => {
+            // 친구 수 조회
+            const friendsCount = await Matching.getFriendsList(user.user_id);
+            
+            // 좋아요 수 조회
+            const likeCount = await Like.getLikeCount(user.user_id);
+            
+            // 거리 계산 (currentUserAddress가 있는 경우)
+            let distance = null;
+            if (currentUserAddress && user.dogProfile.address) {
+                try {
+                    distance = calculateAddressDistance(currentUserAddress, user.dogProfile.address);
+                } catch (error) {
+                    console.error('거리 계산 오류:', error);
+                    distance = null;
+                }
+            }
+            
+            return {
+                user_id: user.user_id,
+                name: user.dogProfile.name,
+                breed: user.dogProfile.breed,
+                gender: user.dogProfile.gender,
+                weight: user.dogProfile.weight,
+                age: user.dogProfile.birthDate ? 
+                    Math.floor((new Date() - new Date(user.dogProfile.birthDate)) / (365.25 * 24 * 60 * 60 * 1000)) : '나이 미등록',
+                birthDate: user.dogProfile.birthDate,
+                neutralization: user.dogProfile.neutralization,
+                profileImage: user.dogProfile.profileImage,
+                charactor: user.dogProfile.charactor,
+                favorites: user.dogProfile.favorites,
+                cautions: user.dogProfile.cautions,
+                address: user.dogProfile.address,
+                dogMbti: user.dogMbti,
+                friendsCount: friendsCount.length,
+                likeCount: likeCount,
+                distance: distance
+            };
+        }));
+
+        res.status(200).json({
+            success: true,
+            message: "매칭용 사용자 목록을 성공적으로 조회했습니다.",
+            totalCount: usersWithStats.length,
+            users: usersWithStats
+        });
+
+    } catch (error) {
+        console.error("매칭용 사용자 목록 조회 오류:", error);
+        res.status(500).json({
+            success: false,
+            message: "사용자 목록 조회 중 오류가 발생했습니다."
+        });
+    }
+};
+
+// 강아지 디비티아이 검사 결과 업데이트 함수
+export const updateDogMbti = async (req, res) => {
+    try {
+        const { userId, dbtiResult } = req.body;
+        
+        console.log('DBTI 업데이트 요청:', { userId, dbtiResult });
+        
+        // 프론트엔드에서 계산된 DBTI 결과를 그대로 사용
+        if (!dbtiResult) {
+            return res.status(400).json({
+                success: false,
+                message: "DBTI 결과가 필요합니다."
+            });
+        }
+        
+        // 1. 디비티아이 검사 결과 업데이트 (여러 방법으로 시도)
+        const updateData = {
+            'dogMbti.isCompleted': true,
+            'dogMbti.result': dbtiResult,
+            'dogMbti.completedAt': new Date()
+        };
+        
+        let updatedUser = await User.findOneAndUpdate(
+            { user_id: userId },
+            updateData,
+            { new: true }
+        );
+        
+        if (!updatedUser) {
+            // user_id로 찾지 못했으면 다른 방법으로 시도
+            updatedUser = await User.findByIdAndUpdate(
+                userId,
+                updateData,
+                { new: true }
+            );
+        }
+        
+        if (!updatedUser) {
+            // 이메일로도 시도
+            updatedUser = await User.findOneAndUpdate(
+                { email: userId },
+                updateData,
+                { new: true }
+            );
+        }
+        
+        if (!updatedUser) {
+            return res.status(404).json({
+                success: false,
+                message: "존재하지 않는 사용자입니다."
+            });
+        }
+        
+        res.status(200).json({
+            success: true,
+            message: "강아지 디비티아이 검사 결과가 저장되었습니다!",
+            dogMbti: updatedUser.dogMbti
+        });
+        
+    } catch (error) {
+        console.error("디비티아이 업데이트 오류:", error);
+        res.status(500).json({
+            success: false,
+            message: "디비티아이 검사 결과 저장 중 오류가 발생했습니다."
         });
     }
 };

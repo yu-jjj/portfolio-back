@@ -1,5 +1,5 @@
 import express from "express";
-import { registerUser, profileRegistration, modifyUser, removeUser, modifyPicture, checkUserId, getAllUsers, getUserById, deleteAllUsers, healthRegistration, completeRegistration, socialUserInfoRegistration } from "../../controllers/user/userController.js";
+import { registerUser, profileRegistration, modifyUser, removeUser, modifyPicture, checkUserId, getAllUsers, getUserById, deleteAllUsers, healthRegistration, completeRegistration, socialUserInfoRegistration, getMatchingUsers, updateDogMbti } from "../../controllers/user/userController.js";
 import { signup } from "../../controllers/auth/authController.js";
 import upload from "../../middleware/multer.js";
 
@@ -28,6 +28,9 @@ userRouter.post("/health-registration", healthRegistration);
 // 회원 목록 조회
 userRouter.get("/", getAllUsers);
 
+// 매칭용 사용자 목록 조회
+userRouter.get("/matching", getMatchingUsers);
+
 // 특정 회원 조회
 userRouter.get("/:user_id", getUserById);
 
@@ -42,5 +45,8 @@ userRouter.delete("/", deleteAllUsers);
 
 // 썸네일 이미지 변경
 userRouter.put("/update-thumbnail", upload.single('profileImage'), modifyPicture);
+
+// MBTI 결과 저장
+userRouter.put("/update-mbti", updateDogMbti);
 
 export default userRouter;

@@ -1,15 +1,37 @@
 // import { getCurrentTime } from "../../utils/utils.js";
 import moment from "moment";
+import Chat from "../../models/chatSchema.js";
 import Schedule from "../../models/scheduleSchema.js";
+import User from "../../models/userSchema.js";
 import { getCurrentTime } from "../../utils/utils.js";
 
 
-
-// 월별 캘린더 - 다가오는 일정날
+// 월별 캘린더 - 다가오는 일정날 
 export const getComingSchedules = async (req, res) => {
-  const user_id = req.params.user_id || req.query.user_id;
   try {
-    const schedules = await Schedule.find({ user_id }).lean();
+    const user_id = req.params.user_id || req.query.user_id;
+    const match_id = req.params.match_id || req.query.match_id;
+
+    if (!user_id) {
+      return res.status(400).json({ message: "user_id가 필요합니다." });
+    }
+
+    let schedules = [];
+
+    if (match_id) {
+      // ✅ 특정 match_id의 일정만 조회
+      schedules = await Schedule.find({ match_id: String(match_id) }).lean();
+    } else {
+      // ✅ 내가 속한 모든 match_id 조회
+      const chats = await Chat.find({
+        $or: [{ user_id }, { target_id: user_id }],
+      }).lean();
+      const matchIds = chats.map((c) => c.match_id);
+
+      schedules = await Schedule.find({
+        $or: [{ user_id }, { match_id: { $in: matchIds } }],
+      }).lean();
+    }
 
     const nowStr = getCurrentTime(); // "YYYY-MM-DD HH:mm:ss"
     const now = moment(nowStr, "YYYY-MM-DD HH:mm:ss");
@@ -63,8 +85,16 @@ export const getCompletedSchedules = async (req, res) => {
   }
 
   try {
-    // 1) 해당 유저 전체 일정
-    const schedules = await Schedule.find({ user_id }).lean();
+    // 1) 내가 속한 match_id 전부 조회
+    const chats = await Chat.find({
+      $or: [{ user_id }, { target_id: user_id }],
+    }).lean();
+    const matchIds = chats.map((c) => c.match_id);
+
+    // 2) 내 일정 + 같은 match_id 일정 조회
+    const schedules = await Schedule.find({
+      $or: [{ user_id }, { match_id: { $in: matchIds } }],
+    }).lean();
 
     // 2) 현재 시각
     const nowStr = getCurrentTime(); // "YYYY-MM-DD HH:mm:ss"
@@ -113,12 +143,27 @@ export const getCompletedSchedules = async (req, res) => {
 };
 
 export const getSchedulesNames = async (req, res) => {
-  // 월별 캘린더 조회
+  // 월별 캘린더 조회 - 일정
   const user_id = req.params.user_id;
   try {
-    const schedules = await Schedule.find({ user_id: user_id })
+    const chats = await Chat.find({
+      $or: [
+        { user_id: user_id },
+        { target_id: user_id }
+      ]
+    }).lean();
+
+    const matchIds = chats.map(c => c.match_id);
+
+    const schedules = await Schedule.find({
+      $or: [
+        { user_id: user_id },
+        { match_id: { $in: matchIds } }
+      ]
+    }).lean();
+
     res.status(200).json({
-      message: "투두를 정상적으로 불러왔습니다.",
+      message: "일정을 정상적으로 불러왔습니다.",
       schedules,
     })
 
@@ -126,12 +171,55 @@ export const getSchedulesNames = async (req, res) => {
     console.log("todoController foundTodo fetching error")
     console.error(error)
     res.status(500).json({
-      message: "투두를 불러오는 동안 오류가 발생했습니다.😅"
+      message: "일정을 불러오는 동안 오류가 발생했습니다.😅"
     })
   }
 
   res.send('일정 목록');
 }; 
+
+export const getBirthdays = async (req, res) => {
+  // 월별 캘린더 - 생일 조회
+  const user_id = req.params.user_id;
+  try {
+    const chats = await Chat.find({ user_id: user_id })
+      .select('target_id')
+      .lean();
+    const targetIds = [...new Set(chats.map(c => c?.target_id).filter(Boolean))];
+
+    if (targetIds.length === 0) {
+      return res.status(200).json({ message: '생일을 정상적으로 불러왔습니다.', birthdays: [] });
+    }
+
+    const users = await User.find(
+      { user_id: { $in: targetIds } },
+      { user_id: 1, 'dogProfile.name': 1, 'dogProfile.birthDate': 1 }
+    ).lean();
+
+    const toMMDD = (v) =>
+      !v ? null
+        : /^\d{2}-\d{2}$/.test(v) ? v
+        : /^\d{4}-\d{2}-\d{2}$/.test(v) ? v.slice(5)
+        : (() => { const d = new Date(v); return isNaN(+d) ? null : 
+          `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` })();
+    
+    const birthdays = users
+      .map(u => ({ user_id: u.user_id, name: u?.dogProfile?.name || '', date: toMMDD(u?.dogProfile?.birthDate), _id: u?._id }))
+      .filter(b => b.date);
+      
+    res.status(200).json({
+      message: "생일을 정상적으로 불러왔습니다.",
+      birthdays,
+    })
+
+  } catch (error) {
+    console.log("calendarController getBirthdays fetching error")
+    console.error(error)
+    res.status(500).json({
+      message: "생일을 불러오는 동안 오류가 발생했습니다.😅"
+    })
+  }
+};
 
 
 // 일정
@@ -145,11 +233,11 @@ export const getSchedulesNames = async (req, res) => {
 export const postSchedules = async (req, res) => {
   // 일별 캘린더 일정 등록 로직
   console.log("postSchedules 요청~!")
-  const { user_id, chat_id, title, date, time, location } = req.body;
+  const { user_id, match_id, title, date, time, location } = req.body;
 
   const schedule = {
     user_id: user_id,
-    // chat_id: chat_id,
+    match_id: match_id,
     title: title,
     date: date,
     time: time,
@@ -176,7 +264,19 @@ export const getSchedules = async (req, res) => {
   const { date } = req.query;
   
   try {
-    const schedules = await Schedule.find({ user_id: user_id, date: date })
+    const chats = await Chat.find({
+      $or: [{ user_id }, { target_id: user_id }]
+    }).lean();
+    const matchIds = chats.map(c => c.match_id);
+
+    const schedules = await Schedule.find({
+      date: date,
+      $or: [
+        { user_id },
+        { match_id: { $in: matchIds } }
+      ]
+    }).lean();
+
     res.status(200).json({
       message: "일정을 정상적으로 불러왔습니다.",
       schedules,
@@ -192,11 +292,50 @@ export const getSchedules = async (req, res) => {
 
 export const putSchedules = async (req, res) => {
   // 일별 캘린더 일정 수정 로직
+  const { user_id, schedule_id, schedule } = req.body;
+
+  const update = {};
+    if (schedule.title !== undefined) update.title = schedule.title;
+    if (schedule.location !== undefined) update.location = schedule.location;
+    if (schedule.date !== undefined) update.date = schedule.date;   // 필요시 포맷 보정
+    if (schedule.time !== undefined) update.time = schedule.time;   // 필요시 포맷 보정
+    if (schedule.chat_id !== undefined) update.chat_id = schedule.chat_id;   // 필요시 포맷 보정
+    // if (Array.isArray(schedule.chat_id)) update.chat_id = schedule.chat_id;
+
+  try {
+    await Schedule.updateOne(
+      {user_id, _id: schedule_id},
+      {$set: update},
+      { runValidators: true },
+    )
+    res.status(200).json({
+      message: "일정을 정상적으로 수정했습니다.",
+    })
+  } catch (error){
+    console.error(`calendarController postDiary ${error}`)
+    res.status(500).json({
+      message: "일정을 수정하는 중 오류 발생"
+    })
+  }
   res.send('일정 목록');
 }; 
 
 export const deleteSchedules = async (req, res) => {
   // 일별 캘린더 일정 삭제 로직
+  const { user_id, schedule_id } = req.body;
+  
+  try {
+    await Schedule.deleteOne({user_id: user_id, _id: schedule_id})
+    res.status(200).json({
+      message: "정상적으로 삭제가 완료되었습니다."
+    })
+  } catch (error) {
+    console.log("calenderController remove error!😥")
+    console.error(err)
+    res.status(500).json({
+      message : "삭제 시 오류가 발생했습니다."
+    })
+  }
   res.send('일정 목록');
 };
 
@@ -263,11 +402,55 @@ export const getDiary = async (req, res) => {
 
 export const putDiary = async (req, res) => {
   // 일별 캘린더 일기 수정 로직
-  res.send('일정 목록');
+  const { user_id, schedule_id, diary_text, diary_photo_url } = req.body;
+
+  const update = {};
+  if(diary_text !== undefined) update.diary_text = diary_text;
+  if(diary_photo_url !== undefined) update.diary_photo_url = diary_photo_url;
+  
+  try {
+    await Schedule.updateOne(
+      {user_id, _id: schedule_id },
+      {$set: update},
+      { runValidators: true },
+    )
+    res.status(200).json({
+        message: "일기를 정상적으로 수정했습니다.",
+        diary_text,
+        diary_photo_url
+      })
+    } catch (error){
+      console.error(`calendarController putDiary ${error}`)
+      res.status(500).json({
+        message: "일기을 수정하는 중 오류 발생"
+      })
+    }
+  res.send('일기 수정 성공');
 }; 
 
 export const deleteDiary = async (req, res) => {
   // 일별 캘린더 일기 삭제 로직
-  res.send('일정 목록');
+  const { user_id, schedule_id } = req.body;
+
+  const update = {};
+  update.diary_text = null;
+  update.diary_photo_url = null;
+
+  try {
+    await Schedule.updateOne(
+      {user_id, _id: schedule_id},
+      {$set: update},
+      { runValidators: true },
+    )
+    res.status(200).json({
+        message: "일기를 정상적으로 삭제했습니다.",
+      })
+    } catch (error){
+      console.error(`calendarController deleteDiary ${error}`)
+      res.status(500).json({
+        message: "일기을 삭제하는 중 오류 발생"
+      })
+    }
+  res.send('일기 삭제 성공');
 }; 
 
